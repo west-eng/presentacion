@@ -74,7 +74,7 @@ Se enfoca en el desarrollo de *modelos* explicativos, principalmente se ocupa de
 
 ### Objetivos y proposito
 
-Durante la fase de inferencia se busca desarrollar *modelos* explicativos, no siempre acertados desde el punto de vista cuantitativo, pero si desde el punto de vista cualitativo.
+Durante la fase de inferencia se busca desarrollar *modelos* explicativos, no siempre acertados desde el punto de vista cuantitativo, pero sí desde el punto de vista cualitativo.
 
 Es el punto inicial de apoyo para la toma de decisiones, responde a preguntas como:
 
@@ -219,5 +219,7 @@ West Engineering es el aliado estratégico que su empresa necesita para comenzar
 ![](herramientas.png)
 
 ***
+
+[Contactenos!](www.west.net.co)
 
 ![](west.png)
