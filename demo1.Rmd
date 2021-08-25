@@ -1,0 +1,416 @@
+---
+title: "Separador Bifásico"
+author: "West Eng"
+date: "8/26/2021"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+    theme: cerulean
+    df_print: paged
+---
+```{r, echo=FALSE}
+htmltools::img(src = knitr::image_uri("logo_horizontal_azul.jpg"), 
+               alt = 'logo',
+               width = '200',
+               height = '80',
+               style = 'float:top')
+```
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      message = FALSE,
+                      warning = FALSE,
+                      comment = "",
+                      fig.height = 3)
+```
+
+## Datos
+
+Los datos usados fueron extraídos de una base de datos históricos, representan el comportamiento de un separador bifásico (Liquido / Gas). Representan las siguientes variables:
+
+* PIT704B3: Presión a la entrada del separador [PSIG]
+* PIT704B1: Presión en el separador [PSIG]
+* PIT704B2: Presión en el separador (redundancia) [PSIG]
+* LIT704B1: Nivel en el separador [IN]
+* LIT704B2: Nivel en el separador (redundancia) [IN]
+* LCV704B1: Apertura de la válvula de control de nivel del separador [%]
+* FIT704B1: Flujo de liquido a la salida del separador [BPD]
+* FCV704B3: Apertura de la válvula de control de flujo de entrada en el separador [%]
+* LIT701A: Nivel en el tanque de almacenamiento (aguas abajo del separador) [FT]
+* PCV704B1: Apertura de la válvula de control de presión en la salida de gas [%]
+
+Los datos fueron muestreados cada 2 segundos durante 2 días.
+
+```{r}
+library(tidyverse)
+library(astsa)
+library(forecast)
+rm(list = ls())
+source("funciones.R")
+df<-read_csv("data_in10.csv")%>%
+  rename(PIT704B3 = `99_99619_LCI07_SE704B_PIT-704B3_PV`,
+         PIT704B2 = `99_99619_LCI07_SE704B_PIT-704B2_PV`,
+         PIT704B1 = `99_99619_LCI07_SE704B_PIT-704B1_PV`,
+         LIT704B1 = `99_99619_LCI07_SE704B_LIT-704B1_PV`,
+         LCV704B1 = `99_99619_LCI07_P701G_LCV-704B1_PV`,
+         FIT704B1 = `99_99619_LCI07_SE704B_FIT-704B1_PV`,
+         LIT704B2 = `99_99619_LCI07_SE704B_LIT-704B2_PV`,
+         FCV704B3 = `99_99619_LCI07_SE704B_FCV-704B3_ZT`,
+         LIT701A = `99_99619_LCI07_T701_LIT-701A_PV`,
+         PCV704B1 = `99_99619_LCI07_P701G_PCV-704B1_PV`)%>%
+  select(-included)%>%
+  mutate(date = as.POSIXct(strptime(date, "%d-%m-%Y %H:%M:%S")))
+```
+
+## ANÁLISIS MEDICIÓN DE FLUJO
+
+### Flujo vs Tiempo
+
+```{r}
+FIT704B1<-ts(df$FIT704B1)
+ggplot()+
+  geom_line(aes(time(FIT704B1), FIT704B1))+
+  labs(x = "Tiempo [# Muestras cada 2 seg]", y = "Flujo [BPD]")
+```
+
+Observemos el comportamiento en una escala temporal menor:
+
+```{r}
+ggplot()+
+  geom_line(aes(time(window(FIT704B1, start = 10000, end = 12500)), window(FIT704B1, start = 10000, end = 12500)))+
+  labs(x = "Tiempo, [# Muestras cada 2 seg]", y = "Flujo [BPD]")
+```
+
+La gráfica contiene 2500 muestras de 2 segundos, es decir 5K segundos lo cual corresponde a un intervalo de 1 hora y 25 minutos aproximadamente aproximadamente. Se observa que la señal esta sometida a ruido, pero se deja ver una comportamiento tendencial y posiblemente uno cíclico.
+
+### Análisis de frecuencia
+
+Se observa el comportamiento de las señal en el dominio de la frecuencia para determinar la existencia de patrones ciclicos.
+
+```{r}
+FIT704B1_spec<-spectrum(FIT704B1, plot = F)
+quickplot(x = FIT704B1_spec$freq, y = FIT704B1_spec$spec, geom = "line")+
+  labs(x = " Frecuencia [1 / # Muestras]", y = "Densidad Espectral")
+```
+
+Tenemos las frecuencias concentradas en la parte baja del espectro, lo cual se verifica en las siguientes gráficas:
+
+```{r}
+FIT704B1_spec<-spectrum(FIT704B1, plot = F)
+quickplot(x = FIT704B1_spec$freq[FIT704B1_spec$freq<=0.0075], y = FIT704B1_spec$spec[FIT704B1_spec$freq<=0.0075], geom = "line")+
+  labs(x = " Frecuencias menores a 0.0075 [1 / # Muestras]", y = "Densidad Espectral")
+quickplot(x = FIT704B1_spec$freq[FIT704B1_spec$freq<=0.001], y = FIT704B1_spec$spec[FIT704B1_spec$freq<=0.001], geom = "line")+
+  labs(x = " Frecuencias menores a 0.001 [1 / # Muestras]", y = "Densidad Espectral")
+```
+
+Se observa un segundo pico en la frecuencia 0.0047 aproximadamente es decir, un periodo de aproximadamente 213 muestras, 416 segundos o 6.9 minutos.
+
+### Auto-correlaciones
+
+La auto-correlación es una medida de que tanto se parece una señal a si misma cuando es desplazada en el tiempo, permite identificar patrones cíclicos con facilidad:
+
+```{r, fig.height=6}
+par(mfrow= c(3, 1))
+acf(FIT704B1, lag.max = 250, main = "")
+acf(FIT704B1, lag.max = 750, main = "")
+acf(FIT704B1, lag.max = 2000, main = "")
+```
+
+Se hace evidente el comportamiento cíclico de la señal, para determinar el lag efectivo para el que se tiene la periodicidad:
+
+```{r}
+FIT704B1_acf<-acf(FIT704B1, lag.max = 250, plot = F)
+# Se encuentra el lag para el cual el acf es maximo en el intervalo entre los lags 150 y 250
+print(paste("Lag de periodicidad:", FIT704B1_acf$lag[150:250, 1, 1][which.max(FIT704B1_acf$acf[150:250, 1, 1])]))
+```
+
+El lag 209 equivale a 418 segundos o 6.97 minutos, para efectos prácticos vamos a tomar 7 minutos.
+
+### Análisis de incertidumbre de la medición
+
+Para poder realizar un análisis sobre la varianza real asociada a la señal de flujo, primero se debe asegurar que se segrega la tendencia y la componente cíclica, para lo cual hacemos dos diferenciaciones, la señal residual es el objeto de estudio:
+
+```{r}
+ft<-diff(diff(FIT704B1, differences = 1), lag = 209)
+plot(window(ft, start = 210, end = 600))
+print(paste0("Media del ruido de diferenciación: ", mean(ft)))
+print(paste0("Desviacion estándar de ruido de diferenciacion: ", sd(ft)))
+```
+
+Se estudia ahora como cambia la incertidumbre de la medición, para esto se divide el dataset en paquetes de 500 muestras, para cada una de los cuales se determina la incertidumbre asociada al mejor modelo arima de cada paquete:
+
+```{r}
+salida<-vector(mode = "list", length = floor(nrow(df)/500))
+for(i in 1:floor(nrow(df)/500)){
+  ft_est<-window(ft, start = 500*(i-1), end = 500*i)
+  out<-mod_opt(ft_est, p = 0:4, q = 0:3)
+  salida[[i]]<-out$parametros
+}
+salida<-bind_rows(salida)%>%
+  mutate(sig = sqrt(sig2), incert = 2*sig)
+ggplot(data = salida)+
+  geom_line(aes(500*(1:nrow(salida)), incert*100/mean(FIT704B1)))+
+  labs(x = "Tiempo [muestras de 2 seg]", y = "Porcentaje de Incertidumbre [%]")+
+  geom_hline(aes(yintercept = (mean(incert)-2*sd(incert))*100/mean(FIT704B1)), color = 2)+
+  geom_hline(aes(yintercept = (mean(incert)+2*sd(incert))*100/mean(FIT704B1)), color = 2)
+```
+
+En el gráfico se ve la evolución de la incertidumbre de medición para los diferentes intervalos, la banda comprendida entre las lineas rojas representa el intervalo de confianza del 95% alrededor de la media de la incertidumbre de medición, los porcentajes se evalúan en comparación con el valor promedio del flujo. Nótese que durante los primeros momentos la incertidumbre de medición se encontraba muy alejada del intervalo de confianza, lo que podría indicar alguna anomalía en el funcionamiento del instrumento durante esos primeros instantes.
+
+A continuación se reporta el error medio de medición y los limites del intervalo de confianza expresados en unidades de ingeniería:
+
+```{r}
+print(paste("Error de medición medio:", round(mean(salida$incert), 2), "[BPD]"))
+print(paste0("Limites indicadores de anomalia: [", round(mean(salida$incert)-2*sd(salida$incert), 2), ", ", 
+             round(mean(salida$incert)+2*sd(salida$incert), 2), "] [BPD]"))
+```
+
+### Señal filtrada
+
+Ahora que conocemos el comportamiento en frecuencia de nuestra señal, se selecciona un filtro que elimine el ruido de la señal original observemos el sistema filtrado:
+
+```{r}
+b<-10
+FIT704B1_w<-window(FIT704B1, end = 1000)
+FIT704B1_fil<-ksmooth(time(FIT704B1_w), FIT704B1_w, bandwidth = b)
+ggplot()+
+  geom_line(aes(x=time(FIT704B1_w), y = FIT704B1_w))+
+  geom_line(aes(x = FIT704B1_fil$x, y = FIT704B1_fil$y), color = 2)
+```
+
+Como es el ruido si elimino la señal filtrada?
+
+```{r}
+FIT704B1_fil<-ksmooth(time(FIT704B1), FIT704B1, bandwidth = b)
+FIT704B1_noi<-FIT704B1-FIT704B1_fil$y
+ggplot()+
+  geom_line(aes(x=time(window(FIT704B1_noi, start = 250, end = 2000)), y = window(FIT704B1_noi, start = 250, end = 2000)))+
+  geom_line(aes(x=time(window(ft, start = 250, end = 2000)), y = window(ft, start = 250, end = 2000)), col = 2)+
+  labs(y = "Ruido [BPD]", x = "Tiempo [# de muestras cada 2 segundos]")
+print(paste0("Media del ruido filtrado: ", mean(FIT704B1_noi)))
+print(paste0("Desviacion estándar de ruido filtrado: ", sd(FIT704B1_noi)))
+```
+
+Con un filtro que hace un promedio ponderado sobre 10 muestras de la señal original, se encuentra un ruido de características similar a lo encontrado con la diferenciación (sección [Análisis de incertidumbre de la medición](# Análisis de incertidumbre de la medición)). Este filtro sería recomendable para aplicar en la medición de flujo.
+
+## ANÁLISIS CONTROL DE NIVEL
+
+Supongamos que se desea estudiar el nivel del separador, por lo que se define este como la variable de salida de este análisis, observemos primero la correlación entre las variables:
+
+```{r}
+print(cor(df$LIT704B2, select(df, -date)))
+```
+
+Se observa que muchas variables tienen altas correlaciones con el LIT704B2, que es la variable de nivel de interés, obsérvese, por ejemplo, que la correlación con el LIT704B1 es de mas del 85%, lo cual se explica por el hecho de que el LIT704B2 es una redundancia del LIT704B1 (de hecho, es curioso que la correlación no sea mayor). Las correlaciones ademas indican que la menor correlación se presenta con LIT701A, que representa el nivel en el tanque que esta aguas abajo del separador.
+
+Teniendo en cuenta la forma en que funciona el separador bifásico, también llama la atención que la correlación entre el nivel y el porcentaje de apertura de la válvula de salida no sea mayor, verifiquemos la cros-correlación entre estas dos señales:
+
+### Relacion entre el nivel y la apertura de la valvula
+
+```{r}
+LIT_LCV_ccf<-ccf(df$LIT704B2, df$LCV704B1, lag.max = 400, main = "")
+```
+
+La cros-correlación muestra la correlación de una señal con otra señal en distintos corrimientos en tiempo, obsérvese como hay un patrón cíclico para el que se tiene que la cros-correlación alcanza nuevos máximos de forma periódica, determinemos cual es es periodo de tiempo:
+
+```{r}
+lag_p<-LIT_LCV_ccf$lag[500:700][which.max(LIT_LCV_ccf$acf[500:700])]-LIT_LCV_ccf$lag[which.max(LIT_LCV_ccf$acf)]
+print(paste0("Numero de muestras por periodo: ", lag_p))
+print(paste0("Tiempo muestras por periodo: ", lag_p*2, " [seg]"))
+```
+
+El periodo de tiempo para cada repetición es de aproximadamente 7.23 minutos, comparemos el comportamiento de la válvula con el comportamiento del nivel:
+
+```{r, fig.height= 4}
+ggplot(data = df[12000:12700, ])+
+  geom_line(aes(x = date, y = (LIT704B2-mean(LIT704B2))/sd(LIT704B2)))+
+  geom_line(aes(x = date, y = (LCV704B1-mean(LCV704B1))/sd(LCV704B1)), color = 2)+
+  labs(y = "Nivel y % Apertura")
+```
+
+Se tiene que ambas señales se mueven de forma muy parecida, pero están desfasadas, la señal de la válvula (en rojo) toma acción mucho después de que ocurra un cambio en el nivel, lo anterior indica que hay espacio para la mejora en la sintonización del lazo de control o quizá hay un problema en la válvula que hace que responda tardíamente a los cambios en el nivel. De la gráfica de cros-correlación podemos determinar cual es el retraso en la respuesta de la válvula, en el caso ideal, las señales observadas deberían tener la mayor cros-correlación para el corrimiento cero, pero como están desfasadas la mayor cros-correlación se presentará en el corrimiento de desfase:
+
+```{r}
+print(paste0("Numero de muestras de desfase: ", -LIT_LCV_ccf$lag[which.max(LIT_LCV_ccf$acf)]))
+print(paste0("Tiempo de retardo de respuesta de la válvula: ", -2*LIT_LCV_ccf$lag[which.max(LIT_LCV_ccf$acf)], " [seg]"))
+```
+
+### Señales redundantes
+
+Dentro del análisis de un sistema se procura eliminar las señales redundantes, ya que estas inducen a errores en la determinación de la verdadera calidad del modelo desarrollado, la redundancia se observa calculando el coeficiente de inflación de varianza:
+
+```{r}
+library(car)
+fit_prev<-lm(LIT704B2~.-date, data = df)
+print(vif(fit_prev))
+```
+
+La inflación de varianza se considera normal para valores por debajo de 5, obsérvese que los PIT704B1/B2 superan los valores normales de inflación de varianza, lo cual es consistente con el hecho de ser instrumentos redundante, LIT704B1 es también un instrumento redundante, se deben eliminar dichas redundancias para determinar el desempeño real del modelo:
+
+```{r}
+df_w<-select(df, -PIT704B1, -LIT704B1)
+fit_prev<-lm(LIT704B2~.-date, data = df_w)
+print(vif(fit_prev))
+```
+
+## Gráficas de dispersión de puntos
+
+Observemos como son las relaciones entre el nivel en el separador y las demas variables gráficamente:
+
+```{r}
+df_w1<-df_w[30000:45000, 2:8]
+plots<-map(df_w1, function(x){ggplot(data = df_w1)+geom_point(aes(x, LIT704B2), alpha = 1/3)})
+for(i in 1:length(plots)){
+  if(names(df_w1)[i] != "LIT704B2"){
+    print(plots[[i]]+labs(x = names(df_w1)[i]))
+  }
+}
+```
+
+Es difícil encontrar alguna relación clara, sin embargo, PIT704B2, LCV704B1 y FIT704B1 parecen tener algún comportamiento sistemático con relación al LIT704B2, desarrollemos un modelo usando regresión lineal para determinar mas claramente las relaciones entre las variables:
+
+## Regresion lineal
+
+```{r}
+df_w1<-df_w[30000:45000,]
+fit1<-lm(LIT704B2~., data = df_w1)
+summary(fit1)
+```
+
+El modelo explica aproximadamente el 56% de la variabilidad de la señal de nivel, observemos como son los residuos de la regresión (es decir, aquella parte no puede explicar el modelo)
+
+```{r}
+qplot(x = 30000:45000, y = fit1$residuals, geom = "line")+
+  labs(x = "Tiempo [# de muestras cada 2 seg]", y = "Error residual [IN]")
+```
+
+Los errores residuales parecen mostrar un comportamiento aleatorio normal, casi siempre con incertidumbres menores a +/- 1 pulgada, sin embargo, por la naturaleza misma del proceso, se sabe que hay grandes posibilidades de que el ruido residual este correlacionado y sea una función del tiempo, esto resulta en que la relevancia real de las variables se ve enmascarada, dando cabida a darle importancia a variables que realmente no la tienen.
+
+Adicionalmente, debido a la gran cantidad de muestras disponibles, las pruebas estadísticas de los datos correlacionados suelen arrojar p-values demasiado pequeños. Analicemos el sistema tomando solo 4000 muestras:
+
+```{r}
+df_w1<-df_w[31500:35500,]
+fit1<-lm(LIT704B2~.-date, data = df_w1)
+summary(fit1)
+qplot(x = 31500:35500, y = fit1$residuals, geom = "line")+
+  labs(x = "Tiempo [# de muestras cada 2 seg]", y = "Error residual [IN]")
+Box.test(fit1$residuals, lag = log(length(fit1$residuals)))
+```
+En este intervalo de tiempo es mucho mas claro que el ruido esta correlacionado (el valor del ruido )
+La prueba de Box-Pierce sirve para determinar si las auto-correlaciones de los residuos son cero (es decir no hay), si el p-value es menor a 0.05 se rechaza la hipótesis (de que no hay auto-correlación). Dado que el test dio un p-value mucho menor a 0.05 existe fuerte evidencia de que el ruido tiene auto-correlaciones.
+
+```{r}
+acf(fit1$residuals, main = "")
+pacf(fit1$residuals, main = "")
+```
+
+La auto correlación parcial sugiere un comportamiento autoregresivo de grado 2 o 3, Observemos ahora el ACF para mas retardos:
+
+```{r}
+acf(fit1$residuals, lag.max = 450, main = "")
+pacf(fit1$residuals, lag.max = 450, main = "")
+```
+
+Es evidente que se tiene un remanente de comportamiento cíclico, sobretodo teniendo en cuenta la presencia de ciclos repetitivo cada 7 minutos, revisemos la densidad espectral:
+
+```{r}
+resid_spec<-spectrum(fit1$residuals, plot = F)
+qplot(x=resid_spec$freq, y = resid_spec$spec, geom = "line")
+qplot(x=resid_spec$freq[resid_spec$freq<=0.025], y = resid_spec$spec[resid_spec$freq<=0.025], geom = "line")+
+  labs(x = " Frecuencias menores a 0.025 [1 / # Muestras]", y = "Densidad Espectral")
+```
+
+Calculemos los máximos para la densidad espectral:
+
+```{r}
+resid_spec2<-tibble(freq = resid_spec$freq, spec = resid_spec$spec)%>%
+  mutate(per_seg = 2/freq, per_min = per_seg/60)%>%
+  arrange(desc(spec))
+print(head(resid_spec2))
+```
+
+se observa de nuevo que la mayor potencia se concentra en un periodo cíclico de aproximadamente 7 minutos, existen otras componentes que pueden ser significativas en 10 y 22 minutos, sin embargo no las consideraremos para el ejercicio.
+
+Consideremos diferenciar los residuales y comparar el ruido obtenido:
+
+```{r, fig.height=4.5, fig.width=10  }
+res_est1<-diff(fit1$residuals, lag = 210)
+res_est<-diff(res_est1)
+qplot(x = 1:1000, y=fit1$residuals[1:1000], geom = "line")+
+  geom_line(aes(x = 1:1000, y = res_est1[1:1000]), col = 2)+
+  geom_line(aes(x = 1:1000, y = res_est[1:1000]), col = 3)+
+  labs(y ="Ruido [IN]", x = "Tiempo [Muestras cada 2 seg]")
+```
+
+El ruido final parece ser mucho mas estacionario, se ha eliminado la tendencia remanente y el patrón cíclico (obsérvese que en la figura anterior se muestran las dos fases, al residuo se le extrae la parte cíclica y se obtiene la curva en rojo, luego a este se le extrae la tendencia y se obtiene la curva verde)
+
+Finalmente al resultado se le llama proceso estacionario y se gráfica a continuación:
+
+```{r, fig.width=10}
+qplot(1:1000, res_est[1:1000], geom = "line")
+```
+
+Grafiquemos nuevamente la auto-correlación y la auto-correlación parcial:
+
+```{r}
+acf(res_est, main = "")
+pacf(res_est, main = "")
+```
+
+Parece que podemos tener un grado 2 AR y un grado 2 AM, para determinar que modelo se ajusta mejor simulemos todas las posibilidades y escojamos la mejor:
+
+```{r}
+salida2<-mod_opt(res_est, p = 0:2, q = 0:2)
+s2_par<-as.integer(salida2$parametros)
+names(s2_par)<-names(salida2$parametros)
+print(s2_par[1:2])
+```
+
+Se obtiene que el modelo que mejor resultado ofrece es AR grado 2, después de haber obtenido todos estos resultados, podemos construir el modelo para el sistema completo (el resultado mostrado es producto de eliminar las variables que no son representativas estadisticamente hablando):
+
+```{r, fig.height=4.5}
+df_w2<-df_w1[1:2000, ]%>%
+  select(-date, -FCV704B3, -LIT704B2, -FIT704B1, -PIT704B3, -PIT704B2)
+mdl_lineal<-sarima(df_w1$LIT704B2[1:2000], 2, 1, 0, D = 1, S = 210, xreg = as.matrix(df_w2), details = F)
+print(mdl_lineal$ttable)
+```
+
+Los residuales resultantes de la regresión se muestran en las gráficas a continuación:
+
+```{r}
+qplot(time(window(mdl_lineal$fit$residuals, start = 250)), window(mdl_lineal$fit$residuals, start = 250), geom = "line")+
+  labs(x = "Tiempo [# de muestras cada 2 seg]", y = "Ruido Residual [IN]")
+res_acf<-acf(mdl_lineal$fit$residuals, lag.max = 600, plot = F)
+res_pacf<-pacf(mdl_lineal$fit$residuals, lag.max = 600, plot = F)
+qplot(res_acf$lag[2:600], res_acf$acf[2:600])+
+  labs(x = "lags", y = "Autocorrelación de los residuos")
+```
+
+Los residuales del modelo resultante muestran aun comportamientos cíclicos, esta vez con un periodo de 4.4 minutos aproximadamente (ver gráfica de auto-correlación, el periodo es de 132 muestras).
+
+## CONCLUSIONES
+
+Del análisis desarrollado se pueden resumir varios hallazgos relacionados con el sistema estudiado:
+
+1. La medición de flujo en la salida del separador tiene una incertidumbre de medición del 2% en promedio (670 BPD)
+2. Los limites de funcionamiento normal en la incertidumbre de medición se ubican en el 1% y el 4% aproximadamente (200.94 a 1146.26 BPD)
+3. Valores por fuera de esos limites pueden indicar condiciones anómalas.
+4. Es posible construir aplicaciones que verifiquen en linea el funcionamiento de los instrumentos que permitan advertir de condiciones anómalas de medición.
+5. En el sistema evaluado se identificó que las variables mas relevantes que afecta el comportamiento de nivel en el separador son:
+  + Apertura de la válvula de control de nivel LCV704B1
+  + Nivel del tanque aguas abajo del separador LIT701A
+  + Apertura de la válvula de control de presión en el separador PCV704B1
+6. Lo anterior es compatible con lo esperado de un modelo teórico del comportamiento de nivel en el separador, obsérvese que el nivel del tanque aguas abajo del separador (LIT701A) determina la presión aguas abajo de la LCV704B1, mientras que la presión aguas arriba de esta se determina por el lazo de control de presión que a su vez depende del porcentaje de apertura PCV704B1.
+7. Adicionalmente, el análisis detectó comportamientos inherentes a la dinámica de la variable de nivel (es decir, comportamientos que no dependen directamente de variables externas) dicha dinámica se modela por medio de los términos AR (ar1 y ar2 en la tabla de coeficientes del modelo) e indica que los cambios en la variable de nivel dependen también de los niveles anteriores.
+8. En cuanto al funcionamiento del lazo de control de nivel, se evidencian varios elementos importantes:
+  + La válvula esta actuando con un retardo de 50 segundos en respuesta a cambios en el nivel, lo cual se considera malo para el lazo de control. Se recomienda una evaluación de la sintonización del lazo y verificar el funcionamiento mecánico de la válvula.
+  + En el sistema se identificaron 2 comportamientos cíclicos distintos, uno con periodo de 7 minutos y otro con periodo de 4.4 minutos, los cuales pueden ser derivados por la dinámica misma del sistema o por el comportamiento del flujo de entrada, el cual no fue medido.
+
+***
+
+[Contactenos!](www.west.net.co)
+
+![](west.png)
